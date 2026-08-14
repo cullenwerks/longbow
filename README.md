@@ -2,6 +2,15 @@
   <img src="docs/longbow_logo_full.png" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/cullenwerks/ARST-RUST/actions/workflows/ci.yml">
+    <img src="https://github.com/cullenwerks/ARST-RUST/actions/workflows/ci.yml/badge.svg" alt="CI status" />
+  </a>
+  <a href="https://github.com/cullenwerks/ARST-RUST/actions/workflows/build.yml">
+    <img src="https://github.com/cullenwerks/ARST-RUST/actions/workflows/build.yml/badge.svg" alt="Build status" />
+  </a>
+</p>
+
 Create and manage Arma Reforger Dedicated Servers on Windows with this easy to use GUI tool.
 
 This is a Rust + [Tauri](https://tauri.app/) rewrite of the original C#/WinForms tool. The
@@ -25,6 +34,15 @@ backend is Rust; the interface is Svelte + TypeScript running in a webview.
   current Windows 11 builds)
 - Any dependencies for the Arma Reforger Dedicated Server itself (namely the Microsoft Visual
   C++ Runtime)
+
+## Download
+
+Every push to `main` builds an installer via GitHub Actions — grab it from that commit's
+[Build Windows app](https://github.com/cullenwerks/ARST-RUST/actions/workflows/build.yml) run
+(under "Artifacts"). Tagged versions (`vX.Y.Z`) are additionally published to
+[Releases](https://github.com/cullenwerks/ARST-RUST/releases) with the installer attached.
+The installer isn't code-signed, so Windows SmartScreen will show an "unrecognized app"
+warning on first run — click "More info" → "Run anyway".
 
 ## Server Parameters
 
