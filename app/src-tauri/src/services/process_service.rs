@@ -1,5 +1,5 @@
 //! Server process lifecycle: SteamCMD download/update, spawning the dedicated server,
-//! streaming its stdout/stderr, crash/fatal-error detection, and scheduled/auto restart.
+//! streaming its stdout/stderr, and crash/fatal-error detection with auto-restart-on-crash.
 //!
 //! Ported from `Managers/ProcessManager.cs`. Architectural differences from the C# original:
 //! - No singleton — this is a plain struct wrapped by the caller in `Arc<ProcessService>` (its
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use chrono::{Local, NaiveTime, Timelike};
+use chrono::Local;
 use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -100,9 +100,9 @@ const SERVER_CURRENTLY_RUNNING_STR: &str = "Server is currently running";
 const APP_ID_STANDARD: &str = "1874900";
 const APP_ID_EXPERIMENTAL: &str = "1890870";
 
+#[derive(Default)]
 struct Inner {
     is_server_started: bool,
-    is_server_using_timer: bool,
     /// Cancellation flag for the *current* run. A fresh flag is created on every start; setting
     /// it tells the in-flight run to kill SteamCMD (if still downloading), skip launching the
     /// server, and/or kill an already-running server. Replaces the previous design of storing
@@ -113,21 +113,8 @@ struct Inner {
     /// the killing, and during process teardown that task may never be scheduled again.
     server_pid: Option<u32>,
     last_start_ctx: Option<StartServerContext>,
-    restart_timer_cancel: Option<Arc<AtomicBool>>,
 }
 
-impl Default for Inner {
-    fn default() -> Self {
-        Self {
-            is_server_started: false,
-            is_server_using_timer: false,
-            run_cancel: None,
-            server_pid: None,
-            last_start_ctx: None,
-            restart_timer_cancel: None,
-        }
-    }
-}
 
 pub struct ProcessService {
     inner: Mutex<Inner>,
@@ -156,10 +143,6 @@ impl ProcessService {
 
     pub async fn is_server_started(&self) -> bool {
         self.inner.lock().await.is_server_started
-    }
-
-    pub async fn is_server_using_timer(&self) -> bool {
-        self.inner.lock().await.is_server_using_timer
     }
 
     /// Builds the final CLI argument string for the dedicated server, mirroring
@@ -228,21 +211,6 @@ impl ProcessService {
         let joined = args.join(" ");
         tracing::info!("Launching server with the following launch arguments: \"{}\"", joined);
         joined
-    }
-
-    /// Starts (or, if already started, stops) the server — mirrors the C# `StartStopServer`
-    /// toggle. `triggered_by_auto_restart` only affects log wording.
-    pub async fn start_stop_server(
-        self: &Arc<Self>,
-        ctx: StartServerContext,
-        triggered_by_auto_restart: bool,
-    ) -> Result<(), ServiceError> {
-        let started = self.inner.lock().await.is_server_started;
-        if started {
-            self.stop_server(triggered_by_auto_restart).await
-        } else {
-            self.start_server(ctx, triggered_by_auto_restart).await
-        }
     }
 
     /// Spawns SteamCMD, waits for it to finish, then spawns the dedicated server and streams
@@ -481,15 +449,15 @@ impl ProcessService {
 
         let mut server_cmd = match &ctx.server_target {
             ServerTarget::Windows => {
-                let mut c = Command::new(&server_exe);
-                c.current_dir(&server_working_dir);
+                let mut c = Command::new(server_exe);
+                c.current_dir(server_working_dir);
                 c.args(&launch_args);
                 c
             }
             ServerTarget::Wsl { distro } => {
                 // Linux binary is conventionally named without the .exe suffix.
                 let linux_binary = "ArmaReforgerServer";
-                wsl_command(distro.as_deref(), &server_working_dir, linux_binary, &launch_args)
+                wsl_command(distro.as_deref(), server_working_dir, linux_binary, &launch_args)
             }
         };
         server_cmd.stdout(std::process::Stdio::piped());
@@ -704,81 +672,6 @@ impl ProcessService {
             .status();
     }
 
-    /// Starts the daily scheduled auto-restart loop: restarts the server every day at
-    /// `daily_time`. `restart` is called each time the schedule fires (the caller supplies a
-    /// closure that rebuilds a fresh `StartServerContext`, since config may change between
-    /// firings). Mirrors `ProcessManager.ConfigureAutomaticRestartTask` + `PeriodicAsync`.
-    pub async fn configure_automatic_restart_task<F, Fut>(
-        self: &Arc<Self>,
-        daily_time: NaiveTime,
-        rebuild_ctx: F,
-    ) where
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = StartServerContext> + Send,
-    {
-        // Immediately (re)start once, matching the C# original calling
-        // `StartStopServerUsingTimer()` synchronously before entering the periodic loop.
-        let ctx = rebuild_ctx().await;
-        let _ = self.start_stop_server(ctx, true).await;
-
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        {
-            let mut inner = self.inner.lock().await;
-            inner.is_server_using_timer = true;
-            inner.restart_timer_cancel = Some(Arc::clone(&cancel_flag));
-        }
-
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            loop {
-                if cancel_flag.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                let now = Local::now();
-                let today_scheduled = now
-                    .date_naive()
-                    .and_hms_opt(daily_time.hour(), daily_time.minute(), daily_time.second())
-                    .unwrap();
-                let now_naive = now.naive_local();
-                let next_run = if today_scheduled > now_naive {
-                    today_scheduled
-                } else {
-                    today_scheduled + chrono::Duration::days(1)
-                };
-                let delay = (next_run - now_naive)
-                    .to_std()
-                    .unwrap_or(std::time::Duration::from_secs(1));
-
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {
-                        if cancel_flag.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        let ctx = rebuild_ctx().await;
-                        let _ = this.start_stop_server(ctx, true).await;
-                    }
-                    _ = wait_for_cancel(Arc::clone(&cancel_flag)) => {
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    /// Cancels the daily auto-restart loop and stops the server. Mirrors
-    /// `ProcessManager.CancelAutomaticRestartTask`.
-    pub async fn cancel_automatic_restart_task(&self) -> Result<(), ServiceError> {
-        let cancel = {
-            let mut inner = self.inner.lock().await;
-            inner.is_server_using_timer = false;
-            inner.restart_timer_cancel.take()
-        };
-        if let Some(cancel) = cancel {
-            cancel.store(true, Ordering::SeqCst);
-        }
-        self.stop_server(false).await
-    }
 }
 
 /// Polls a cancellation flag; used to make the daily-restart sleep interruptible.
