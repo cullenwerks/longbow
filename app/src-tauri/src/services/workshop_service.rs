@@ -133,20 +133,18 @@ impl WorkshopService {
     /// Searches the workshop catalog. `sort` is passed through verbatim to the upstream API
     /// (observed valid values include `"popular"`/omitted and `"newest"`); an unrecognized
     /// value is upstream's problem to reject, not ours to validate.
+    ///
+    /// `tags` filters to assets carrying any of the given category tags (an OR/union, not an
+    /// AND) — confirmed live: upstream wants one repeated `tags=` param per value, not a single
+    /// comma-joined value (that returns zero results, since it's matched as one literal string).
     pub async fn search(
         &self,
         query: Option<&str>,
         page: u32,
         sort: Option<&str>,
+        tags: &[String],
     ) -> Result<WorkshopSearchResult, ServiceError> {
-        let mut path = format!("/workshop.json?page={page}");
-        if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
-            path.push_str(&format!("&search={}", urlencode(q.trim())));
-        }
-        if let Some(s) = sort.filter(|s| !s.trim().is_empty()) {
-            path.push_str(&format!("&sort={}", urlencode(s.trim())));
-        }
-
+        let path = build_search_path(query, page, sort, tags);
         let json = self.fetch_data_json(&path).await?;
         let raw: RawSearchResponse = serde_json::from_value(json)?;
         Ok(WorkshopSearchResult {
@@ -168,6 +166,24 @@ impl WorkshopService {
         let raw: RawDetailResponse = serde_json::from_value(json)?;
         Ok(raw.page_props.asset.into_detail())
     }
+}
+
+/// Builds the `/workshop.json?...` path+query for [`WorkshopService::search`]. A free function
+/// (not a method) so it's testable without a network call, matching how the rest of this app
+/// pulls request-shape logic out from under its I/O — see `build_steamcmd_args` for the same
+/// pattern.
+fn build_search_path(query: Option<&str>, page: u32, sort: Option<&str>, tags: &[String]) -> String {
+    let mut path = format!("/workshop.json?page={page}");
+    if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
+        path.push_str(&format!("&search={}", urlencode(q.trim())));
+    }
+    if let Some(s) = sort.filter(|s| !s.trim().is_empty()) {
+        path.push_str(&format!("&sort={}", urlencode(s.trim())));
+    }
+    for tag in tags.iter().filter(|t| !t.trim().is_empty()) {
+        path.push_str(&format!("&tags={}", urlencode(tag.trim())));
+    }
+    path
 }
 
 /// Minimal, dependency-free percent-encoding for query string values — the only characters
@@ -686,6 +702,39 @@ mod tests {
         assert_eq!(urlencode("ABC-123_test.mod~"), "ABC-123_test.mod~");
     }
 
+    #[test]
+    fn build_search_path_with_no_filters_is_just_the_page() {
+        assert_eq!(build_search_path(None, 1, None, &[]), "/workshop.json?page=1");
+    }
+
+    #[test]
+    fn build_search_path_adds_one_tags_param_per_category() {
+        // Confirmed live against the real API: repeated `tags=` params, not a single
+        // comma-joined value (which upstream matches as one literal string and returns nothing
+        // for) — this is the one thing worth locking down with a test, since it's the opposite
+        // of what "just join them" would produce.
+        let tags = vec!["VEHICLES".to_string(), "WEAPONS".to_string()];
+        assert_eq!(
+            build_search_path(None, 1, None, &tags),
+            "/workshop.json?page=1&tags=VEHICLES&tags=WEAPONS"
+        );
+    }
+
+    #[test]
+    fn build_search_path_combines_search_sort_and_tags() {
+        let tags = vec!["TERRAINS".to_string()];
+        assert_eq!(
+            build_search_path(Some("RHS"), 3, Some("newest"), &tags),
+            "/workshop.json?page=3&search=RHS&sort=newest&tags=TERRAINS"
+        );
+    }
+
+    #[test]
+    fn build_search_path_ignores_blank_tags() {
+        let tags = vec!["  ".to_string(), "VEHICLES".to_string(), "".to_string()];
+        assert_eq!(build_search_path(None, 1, None, &tags), "/workshop.json?page=1&tags=VEHICLES");
+    }
+
     /// Hits the real workshop site. Not run by default (`cargo test` skips `#[ignore]`d tests) —
     /// run explicitly with `cargo test -- --ignored workshop_service::tests::live_` to confirm
     /// buildId discovery and both endpoints still work against production, e.g. after Bohemia
@@ -698,7 +747,7 @@ mod tests {
             "test",
         );
 
-        let results = service.search(Some("ace"), 1, None).await.expect("search failed");
+        let results = service.search(Some("ace"), 1, None, &[]).await.expect("search failed");
         assert!(results.count > 0, "expected at least one search result");
         assert!(!results.rows.is_empty());
 
@@ -727,7 +776,7 @@ mod tests {
         );
         *service.build_id.lock().await = Some("deliberately-stale-build-id".to_string());
 
-        let results = service.search(None, 1, None).await.expect("search failed after stale buildId");
+        let results = service.search(None, 1, None, &[]).await.expect("search failed after stale buildId");
         assert!(results.count > 0);
     }
 }

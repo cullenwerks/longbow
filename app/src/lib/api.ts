@@ -566,12 +566,33 @@ export interface WorkshopSearchResult {
   rows: WorkshopAssetSummary[];
 }
 
+// Category tags as shown on the Workshop site's own "Main categories" filter (its raw values,
+// e.g. "VEHICLES", match what each mod's own `tags` array carries). Hardcoded here rather than
+// fetched, since this is Bohemia's fixed taxonomy, not per-mod data — nothing to keep in sync.
+export const WORKSHOP_CATEGORIES: { value: string; label: string }[] = [
+  { value: "VEHICLES", label: "Vehicles" },
+  { value: "WEAPONS", label: "Weapons" },
+  { value: "STRUCTURES", label: "Structures" },
+  { value: "CHARACTERS", label: "Characters" },
+  { value: "ANIMALS", label: "Animals" },
+  { value: "VEGETATION", label: "Vegetation" },
+  { value: "PROPS", label: "Props" },
+  { value: "COMPOSITIONS", label: "Compositions" },
+  { value: "SCENARIOS_SP", label: "Scenarios (Singleplayer)" },
+  { value: "SCENARIOS_MP", label: "Scenarios (Multiplayer)" },
+  { value: "TERRAINS", label: "Terrains" },
+  { value: "SYSTEMS", label: "Systems" },
+  { value: "EFFECTS", label: "Effects" },
+  { value: "MISC", label: "Misc" },
+];
+
 export async function searchWorkshopMods(
   query: string | null,
   page: number,
   sort: string | null,
+  tags: string[],
 ): Promise<WorkshopSearchResult> {
-  return invoke<WorkshopSearchResult>("search_workshop_mods", { query, page, sort });
+  return invoke<WorkshopSearchResult>("search_workshop_mods", { query, page, sort, tags });
 }
 
 export async function getWorkshopModDetails(modId: string): Promise<WorkshopAssetDetail> {

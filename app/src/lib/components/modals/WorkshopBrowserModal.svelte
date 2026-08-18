@@ -9,6 +9,7 @@
     searchWorkshopMods,
     getWorkshopModDetails,
     addModsWithDependencies,
+    WORKSHOP_CATEGORIES,
   } from "../../api";
 
   interface Props {
@@ -24,6 +25,11 @@
 
   let query = $state("");
   let sort = $state<"popular" | "newest">("popular");
+  // Category filter, matching the Workshop site's own "Main categories" panel — an OR/union
+  // when more than one is picked (confirmed live: upstream wants a repeated `tags=` param per
+  // value, not a single comma-joined one, which it instead matches as one literal string and
+  // returns zero results for).
+  let selectedTags = $state<Set<string>>(new Set());
   let page = $state(1);
   let rows = $state<WorkshopAssetSummary[]>([]);
   let count = $state(0);
@@ -53,7 +59,12 @@
     loading = true;
     errorMsg = "";
     try {
-      const result = await searchWorkshopMods(query.trim() || null, page, sort === "newest" ? "newest" : null);
+      const result = await searchWorkshopMods(
+        query.trim() || null,
+        page,
+        sort === "newest" ? "newest" : null,
+        Array.from(selectedTags),
+      );
       if (generation !== searchGeneration) return; // superseded by a newer search
       rows = result.rows;
       count = result.count;
@@ -83,6 +94,14 @@
   function onSortChange(next: "popular" | "newest") {
     if (sort === next) return;
     sort = next;
+    scheduleSearch(true);
+  }
+
+  function toggleTag(value: string) {
+    const next = new Set(selectedTags);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    selectedTags = next;
     scheduleSearch(true);
   }
 
@@ -260,6 +279,28 @@
             <button class={sort === "popular" ? "primary small" : "small"} onclick={() => onSortChange("popular")}>Popular</button>
             <button class={sort === "newest" ? "primary small" : "small"} onclick={() => onSortChange("newest")}>Newest</button>
           </div>
+        </div>
+
+        <div style="display:flex; gap:0.3rem; flex-wrap:wrap; margin-bottom:0.75rem;">
+          {#each WORKSHOP_CATEGORIES as cat (cat.value)}
+            <button
+              class={selectedTags.has(cat.value) ? "primary small" : "small"}
+              onclick={() => toggleTag(cat.value)}
+            >
+              {cat.label}
+            </button>
+          {/each}
+          {#if selectedTags.size > 0}
+            <button
+              class="small"
+              onclick={() => {
+                selectedTags = new Set();
+                scheduleSearch(true);
+              }}
+            >
+              Clear categories
+            </button>
+          {/if}
         </div>
 
         {#if errorMsg}

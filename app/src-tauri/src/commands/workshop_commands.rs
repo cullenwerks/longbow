@@ -23,10 +23,11 @@ pub async fn search_workshop_mods(
     query: Option<String>,
     page: u32,
     sort: Option<String>,
+    tags: Vec<String>,
 ) -> Result<WorkshopSearchResult, String> {
     let workshop = state.workshop.lock().await;
     workshop
-        .search(query.as_deref(), page, sort.as_deref())
+        .search(query.as_deref(), page, sort.as_deref(), &tags)
         .await
         .map_err(|e| e.to_string())
 }
